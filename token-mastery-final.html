@@ -1,0 +1,1267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Token Mastery — Stop Hitting Context Limits</title>
+<meta name="description" content="A hands-on interactive course in token optimization for Claude Code, ChatGPT, Gemini, and agentic AI systems. Free. No signup."/>
+<meta property="og:title" content="Token Mastery — Stop Hitting Context Limits"/>
+<meta property="og:description" content="21 lessons on token optimization across Claude Code, ChatGPT, Gemini, and agentic AI. Free interactive course."/>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&family=Playfair+Display:wght@700;900&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+html{font-size:16px}
+body{background:#060608;color:#e8e8f0;font-family:'DM Sans',system-ui,sans-serif;-webkit-font-smoothing:antialiased;min-height:100vh}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:#0c0c10}::-webkit-scrollbar-thumb{background:#2a2a3a;border-radius:2px}
+button{font-family:inherit;cursor:pointer}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.fade-in{animation:fadeIn .3s ease forwards}
+.pulse{animation:pulse 2s ease infinite}
+.mod-card{transition:transform .18s,box-shadow .18s;cursor:pointer}
+.mod-card:hover{transform:translateY(-2px)}
+.lesson-row{cursor:pointer;transition:background .15s}
+.lesson-row:hover{background:#14141e!important}
+.mcp-chip{cursor:pointer;transition:all .18s}
+.tog{transition:all .2s}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ─── ZERO-DEPENDENCY MINI RUNTIME ─────────────────────────────────────────
+// Implements the React API subset we use: createElement, useState, useEffect, createRoot
+// Renders to real DOM — no virtual DOM diffing needed for this app size
+(function(){
+'use strict';
+
+// ── State & rendering ──
+let _rootEl = null;
+let _rootComponent = null;
+let _rootProps = null;
+let _renderScheduled = false;
+
+const stateMap = new Map();
+const effectMap = new Map();
+let _currentKey = '';
+let _stateIndex = 0;
+let _effectIndex = 0;
+let _renderPass = 0;
+
+function scheduleRender() {
+  if (_renderScheduled) return;
+  _renderScheduled = true;
+  Promise.resolve().then(() => {
+    _renderScheduled = false;
+    if (_rootEl && _rootComponent) performRender();
+  });
+}
+
+function performRender() {
+  _renderPass++;
+  _currentKey = 'root';
+  _stateIndex = 0;
+  _effectIndex = 0;
+  const vnode = _rootComponent(_rootProps || {});
+  patch(_rootEl, vnode);
+  runEffects();
+}
+
+// ── createElement ──
+function createElement(type, props) {
+  const children = Array.prototype.slice.call(arguments, 2).flat(Infinity).filter(c => c !== null && c !== undefined && c !== false);
+  return { type, props: props || {}, children };
+}
+
+// ── Hooks ──
+function useState(initial) {
+  const key = _currentKey;
+  const idx = _stateIndex++;
+  const mapKey = key + ':' + idx;
+  if (!stateMap.has(mapKey)) {
+    stateMap.set(mapKey, typeof initial === 'function' ? initial() : initial);
+  }
+  const setState = (function(k) {
+    return function(val) {
+      const prev = stateMap.get(k);
+      const next = typeof val === 'function' ? val(prev) : val;
+      if (next !== prev) { stateMap.set(k, next); scheduleRender(); }
+    };
+  })(mapKey);
+  return [stateMap.get(mapKey), setState];
+}
+
+function useEffect(fn, deps) {
+  const key = _currentKey;
+  const idx = _effectIndex++;
+  const mapKey = key + ':e:' + idx;
+  const prev = effectMap.get(mapKey);
+  const depsChanged = !prev || !deps || deps.some((d, i) => d !== (prev.deps || [])[i]);
+  effectMap.set(mapKey, { fn, deps, depsChanged, cleanup: prev ? prev.cleanup : null });
+}
+
+function runEffects() {
+  for (const [k, e] of effectMap.entries()) {
+    if (e.depsChanged) {
+      if (e.cleanup) { try { e.cleanup(); } catch(err) {} }
+      const cleanup = e.fn();
+      effectMap.set(k, { ...e, depsChanged: false, cleanup: cleanup || null });
+    }
+  }
+}
+
+// ── Component wrapper ──
+function makeComponent(fn) {
+  return function ComponentWrapper(props) {
+    const savedKey = _currentKey;
+    const savedStateIdx = _stateIndex;
+    const savedEffectIdx = _effectIndex;
+    _currentKey = fn.name + ':' + JSON.stringify(props && props.id ? props.id : _stateIndex);
+    _stateIndex = 0;
+    _effectIndex = 0;
+    const result = fn(props);
+    _currentKey = savedKey;
+    _stateIndex = savedStateIdx;
+    _effectIndex = savedEffectIdx;
+    return result;
+  };
+}
+
+// ── DOM Patcher ──
+const _domCache = new Map();
+
+function patch(container, vnode) {
+  container.innerHTML = '';
+  if (vnode == null) return;
+  container.appendChild(vnodeToDom(vnode));
+}
+
+function vnodeToDom(vnode) {
+  if (vnode == null) return document.createTextNode('');
+  if (typeof vnode === 'string' || typeof vnode === 'number') {
+    return document.createTextNode(String(vnode));
+  }
+  if (Array.isArray(vnode)) {
+    const frag = document.createDocumentFragment();
+    vnode.forEach(v => { if (v != null) frag.appendChild(vnodeToDom(v)); });
+    return frag;
+  }
+  if (typeof vnode.type === 'function') {
+    const savedKey = _currentKey;
+    const savedStateIdx = _stateIndex;
+    const savedEffectIdx = _effectIndex;
+    _currentKey = (vnode.type.name || 'anon') + ':' + (_stateIndex);
+    _stateIndex = 0;
+    _effectIndex = 0;
+    const result = vnode.type({ ...vnode.props, children: vnode.children });
+    _currentKey = savedKey;
+    _stateIndex = savedStateIdx + 1;
+    _effectIndex = savedEffectIdx;
+    return vnodeToDom(result);
+  }
+  const el = document.createElement(vnode.type);
+  const props = vnode.props || {};
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'style' && typeof v === 'object') {
+      Object.assign(el.style, v);
+    } else if (k.startsWith('on') && typeof v === 'function') {
+      el.addEventListener(k.slice(2).toLowerCase(), v);
+    } else if (k === 'className') {
+      el.className = v;
+    } else if (k === 'htmlFor') {
+      el.htmlFor = v;
+    } else if (k === 'disabled') {
+      if (v) el.disabled = true;
+    } else if (k !== 'key' && k !== 'children') {
+      try { el.setAttribute(k, v); } catch(e) {}
+    }
+  }
+  (vnode.children || []).forEach(child => {
+    if (child != null && child !== false) {
+      el.appendChild(vnodeToDom(child));
+    }
+  });
+  return el;
+}
+
+// ── createRoot API ──
+function createRoot(el) {
+  _rootEl = el;
+  return {
+    render: function(vnode) {
+      if (vnode && typeof vnode.type === 'function') {
+        _rootComponent = vnode.type;
+        _rootProps = vnode.props;
+      }
+      performRender();
+    }
+  };
+}
+
+// Expose as globals
+window.React = { createElement, useState, useEffect, createRoot };
+window.ReactDOM = { createRoot };
+
+const h = createElement;
+
+// ─── COLORS ───────────────────────────────────────────────────────────────
+const C = {
+  bg:'#060608', bg2:'#0c0c10', bg3:'#12121a',
+  border:'#1e1e2a', dim:'#3a3a50',
+  text:'#e8e8f0', muted:'#6b6b82',
+  green:'#3dffa0', purple:'#b07fff', blue:'#38c8ff',
+  amber:'#ffb830', pink:'#ff5fa0', teal:'#00e5cc', red:'#ff5566'
+};
+
+// ─── AUDIENCE MODES ───────────────────────────────────────────────────────
+const MODES = {
+  explorer: {label:'Explorer', icon:'✦', desc:'New to AI tools. No coding background.', color:C.amber, tag:'Plain language, real-world analogies, no jargon'},
+  practitioner: {label:'Practitioner', icon:'◈', desc:'Use AI tools daily. Some technical awareness.', color:C.green, tag:'Balanced depth with practical examples'},
+  engineer: {label:'Engineer', icon:'⟁', desc:'Developer or technical writer. Comfortable with code.', color:C.blue, tag:'Full technical depth, config examples, code'}
+};
+
+// ─── GLOSSARY ─────────────────────────────────────────────────────────────
+const GLOSSARY = {
+  'token': "The basic unit AI reads. Like a puzzle piece — AI breaks every word into tiny chunks. 'Hello' = 1 chunk. 'Unbelievable' = 4 chunks.",
+  'context window': "The AI's working memory for one conversation. Like a whiteboard — once full, old notes get erased to make room for new ones.",
+  'context': "Everything the AI can 'see' in your current conversation — your messages, files you've shared, and its own replies.",
+  'compaction': "When AI summarizes older conversation to make room for new content. Like taking notes instead of remembering every word.",
+  'prompt': "The message or question you send to an AI. A good prompt is like a clear brief — specific, scoped, with a clear goal.",
+  'RAG': "Retrieval Augmented Generation. Instead of memorizing everything, the AI looks things up in a database on demand — like a search engine mid-conversation.",
+  'MCP server': "A plugin that gives AI tools extra abilities — like connecting to GitHub or Slack. Each plugin uses some of your AI's memory budget.",
+  'subagent': "A separate AI assistant your main AI can delegate research to. Works in its own memory space so it doesn't crowd yours.",
+  'cache': "Saved AI work. If you reference the same document repeatedly, caching means the AI doesn't re-read it fully every time.",
+  'agent': "An AI system that takes actions on your behalf — searching the web, reading files, running code — not just answering questions.",
+  'CLAUDE.md': "A special file Claude Code reads at the start of every session — like a briefing document that tells Claude about your project.",
+  '/compact': "A command in Claude Code that summarizes the conversation so far, freeing up memory for more work."
+};
+
+// ─── RANKS ────────────────────────────────────────────────────────────────
+const RANKS = [
+  {name:'Reader', min:0, color:C.muted},
+  {name:'Practitioner', min:300, color:C.green},
+  {name:'Optimizer', min:700, color:C.blue},
+  {name:'Architect', min:1200, color:C.purple},
+  {name:'Grandmaster', min:1800, color:C.amber}
+];
+
+// ─── COURSE DATA ──────────────────────────────────────────────────────────
+const MODULES = [
+  {
+    id:'m1', icon:'◈', tag:'FOUNDATION', color:C.green,
+    title:'Why You Keep Hitting Limits',
+    summary:'Understand the invisible economy behind every AI conversation.',
+    narrative:"It's 2pm. You've been working with Claude Code for 3 hours on a complex feature. Suddenly the responses get vague. It 'forgets' what you agreed on an hour ago. By 4pm the session is broken. This module explains exactly why — and it starts with understanding tokens.",
+    lessons:[
+      { id:'l1-1', title:'What Is a Token, Really?', xp:50, type:'concept', visual:'token-demo',
+        simple:"Think of AI like a very fast reader who reads your text one tiny chunk at a time. These chunks are called tokens. The AI can only hold a certain number of chunks in its head at once — that's its limit.",
+        keypoints:[
+          {label:'1 token ≈', value:'4 chars', note:"'cat' = 1 token. 'concatenate' = 4 tokens"},
+          {label:'100 tokens ≈', value:'75 words', note:'A short paragraph. English prose is efficient.'},
+          {label:'Code overhead', value:'2–3×', note:'Brackets, semicolons, whitespace all count'},
+          {label:'JSON overhead', value:'3–4×', note:'Keys repeat. Quotes cost. Nesting multiplies.'}
+        ],
+        analogySimple:"Imagine your AI has a whiteboard with exactly 200,000 squares. Every word you write, every file it reads, every answer it gives — fills squares. When the board is full, it has to erase old squares to keep going. Tokens are the squares.",
+        analogyPro:"Your context window is a fixed RAM budget. Every input and output burns from the same pool. Unlike RAM, you can't swap to disk — you compact or lose state.",
+        limits:[
+          {tool:'Claude 3.5 Sonnet', window:'200K', usable:'~167K', note:'33K reserved for autocompact process'},
+          {tool:'Claude Sonnet 4.5 (API)', window:'1M', usable:'~950K', note:'5× more room, same principles apply'},
+          {tool:'GPT-4o', window:'128K', usable:'~120K', note:'Hard truncation at limit, no graceful compaction'},
+          {tool:'Gemini 1.5 Pro', window:'1M', usable:'~200K effective', note:'Quality degrades past 200K in practice'},
+          {tool:'Claude Code (Max plan)', window:'200K', usable:'~167K', note:'Buffer reduced from 45K to 33K in early 2026'}
+        ]
+      },
+      { id:'l1-2', title:'The Hidden Startup Cost', xp:75, type:'interactive', visual:'cost-breakdown',
+        simple:"Before you type a single word, your AI has already used thousands of its memory squares just to 'boot up'. Here's where they go.",
+        breakdown:[
+          {cat:'System Prompt', tokens:2700, pct:1.35, color:C.red, desc:"Claude's core personality, safety guidelines, and base instructions. Always present. Cannot be reduced.", simple:"The AI's built-in rulebook — like the terms you agreed to but never read."},
+          {cat:'System Tools', tokens:16800, pct:8.4, color:C.amber, desc:'Definitions for every tool Claude Code can use. Each MCP server adds 800–5,000 tokens more.', simple:'A list of every superpower the AI has access to. Even ones it will not use today.'},
+          {cat:'Custom Agents', tokens:1300, pct:0.65, color:'#ffe66d', desc:'Your custom slash commands and agent configs in .claude/', simple:'Your personal shortcuts — custom instructions you have saved.'},
+          {cat:'Memory Files', tokens:7400, pct:3.7, color:C.teal, desc:'CLAUDE.md + all @imported files. This is your biggest optimization lever.', simple:'Your project briefing document. This is where most of the waste hides.'},
+          {cat:'Skills', tokens:1000, pct:0.5, color:C.green, desc:'Loaded skill files. Grows with lazy-load patterns.', simple:'Specialist knowledge files the AI loads when needed.'},
+          {cat:'Conversation', tokens:9600, pct:4.8, color:C.blue, desc:'Your actual messages + Claude replies. Grows every single turn.', simple:'The actual conversation — your questions and the AI answers.'},
+          {cat:'Reserved Buffer', tokens:33000, pct:16.5, color:C.dim, desc:'HARDCODED. Cannot use. Claude needs this headroom for the compaction process itself.', simple:'Memory the AI keeps empty on purpose — it needs empty space to think and summarize.'}
+        ],
+        insight:"Before you write a word, ~38,000 tokens are already spent. Add a heavy CLAUDE.md and you're at 50,000+ — and your conversation hasn't started yet."
+      },
+      { id:'l1-3', title:'The Degradation Curve', xp:60, type:'visual', visual:'degradation-curve',
+        simple:"AI doesn't suddenly stop working when it hits a limit. It slowly gets worse — like a person who's been awake for 20 hours. Understanding this curve tells you when to act before things go wrong.",
+        stages:[
+          {pct:'0–50%', label:'Peak Zone', quality:100, color:C.green, desc:'Full attention across your entire conversation. Best outputs, highest consistency.', simple:'The AI is at its sharpest. Every instruction from the beginning is equally in mind.'},
+          {pct:'50–70%', label:'Drift Zone', quality:82, color:'#b8e050', desc:'Early instructions getting less weight. Minor inconsistencies begin appearing.', simple:'Like talking to someone slightly distracted — mostly fine, occasionally forgetful.'},
+          {pct:'70–80%', label:'Compression Zone', quality:62, color:C.amber, desc:"Model heavily prioritizes recent messages. Earlier context feels 'forgotten'. Most users notice something is wrong here.", simple:'The AI is mostly focused on the last few exchanges. Earlier agreements start fading.'},
+          {pct:'80–85%', label:'Crisis Zone', quality:38, color:C.pink, desc:'Auto-compaction triggers at 83.5%. Responses become inconsistent. Instructions contradict each other.', simple:"Like working with someone who's exhausted — outputs are unreliable."},
+          {pct:'85–100%', label:'Failure Zone', quality:10, color:C.red, desc:'Hard errors, truncation, session broken. Any work not saved is at risk.', simple:'The whiteboard is full. The AI cannot hold any more and starts making things up.'}
+        ],
+        rule:"The 80% Rule: treat 80% as your hard ceiling, not 100%. The remaining 20% isn't free space — it's where reasoning headroom lives."
+      }
+    ]
+  },
+  {
+    id:'m2', icon:'⟁', tag:'CLAUDE CODE', color:C.purple,
+    title:'Claude Code: The Insider Playbook',
+    summary:'Tool-specific techniques to 10× your Claude Code sessions.',
+    narrative:"Your 3-hour broken session from Module 1? Here's exactly what happened — and the specific moves that prevent it. These aren't general principles. They're Claude Code mechanics.",
+    lessons:[
+      { id:'l2-1', title:'CLAUDE.md: The Briefing Doc Problem', xp:100, type:'compare', visual:'compare',
+        simple:"CLAUDE.md is like a briefing document your AI reads every morning before work. Most people put everything in it. That's like handing your assistant a 50-page manual to read before every single task, even when they just need to fix a typo.",
+        bad:{label:'Context Bloat — What most people do', cost:'~3,200 tokens every session', code:'# My E-Commerce Project\nThis is a full-stack app built with React, Node.js,\nPostgreSQL, and Redis. JWT for auth, Stripe\nfor payments, SendGrid for emails.\n\nThe database has 47 tables. Main ones:\nusers, products, orders, cart_items...\n\n## Authentication\nJWT with 15min access tokens and 7-day\nrefresh tokens. The refresh logic is in...\n[continues for 180 more lines]', problem:'Every session loads ALL of this — even when fixing a CSS typo.'},
+        good:{label:'Tiered Architecture — What experts do', cost:'~380 tokens every session', code:'# ShopX — Quick Reference\nStack: React / Node.js / PostgreSQL / Redis\nEntry: src/app.ts | Tests: jest --testPathPattern=<file>\n\n## Always follow\n- TypeScript strict mode\n- Use error classes from src/errors/\n\n## Load when needed (@filename)\nAuth patterns    → @docs/auth.md\nDB conventions   → @docs/database.md\nAPI standards    → @docs/api.md', win:'88% token reduction. Domain docs load only when Claude needs them.'},
+        tiers:[
+          {tier:'Tier 1 — Always Load', budget:'< 500 tokens', content:'Stack, entry points, non-negotiable rules', color:C.green},
+          {tier:'Tier 2 — Load on Demand', budget:'500–2,000 each', content:'Domain docs @imported by name when needed', color:C.amber},
+          {tier:'Tier 3 — Never in CLAUDE.md', budget:'Any size', content:'Full API docs, changelogs, generated files', color:C.red}
+        ]
+      },
+      { id:'l2-2', title:'Strategic /compact: Don\'t Wait for the Crash', xp:90, type:'decision', visual:'decision',
+        simple:"When your AI's memory gets full, it summarizes to make room — losing specific details. The trick: summarize at natural stopping points, not when you're mid-task.",
+        decisions:[
+          {situation:'Research phase complete — explored the codebase', action:'/compact now', actionColor:C.green, why:'Clear exploration noise. Keep findings. Start implementation fresh.', bad:'Waiting until 80%+ — you lose implementation headroom to research history.'},
+          {situation:'Feature shipped, tests pass', action:'/compact now', actionColor:C.green, why:'Natural milestone. Next task starts without old implementation noise.', bad:'Carrying finished-feature context into the next task.'},
+          {situation:'You hit a dead end', action:'/compact now', actionColor:C.green, why:'Clear the failed approach. Don\'t let wrong paths bias the next attempt.', bad:'Pushing through — failed reasoning stays in context.'},
+          {situation:'Switching completely (e.g., auth → UI)', action:'/clear', actionColor:C.blue, why:'Completely different context. Don\'t carry unrelated state.', bad:"/compact — you'll still carry irrelevant context forward."},
+          {situation:'Mid-implementation — code half-written', action:'DO NOT compact', actionColor:C.red, why:'Finish first, then compact.', bad:"You'll lose working variable names, partial decisions, error state."}
+        ],
+        tip:'The Handoff Technique: before compacting, ask Claude to write a HANDOFF.md with current state, key decisions, and next steps. Point to it after compaction for near-zero information loss.'
+      },
+      { id:'l2-3', title:'Subagents: Your Context Firewall', xp:110, type:'compare', visual:'compare',
+        simple:"Imagine hiring a research assistant who does all the digging in their own notebook, then gives you a one-page summary. That's what subagents do — they research in a separate memory space so they don't fill up yours.",
+        bad:{label:'Direct Research — Floods your context', cost:'-8,000+ tokens from your main window', code:"You: 'How does our auth system handle token refresh?'\n\n→ Claude reads: auth.ts, middleware.ts, utils/jwt.ts,\n  config/auth.ts, types/auth.ts...\n→ Your context: consumed 8,000 tokens\n→ Useful signal in all that: ~200 tokens (2.5%)", problem:'You paid 8,000 tokens to get 200 tokens of useful information.'},
+        good:{label:'Subagent Research — Isolates the cost', cost:'-400 tokens from your main window', code:"You: 'Use a subagent to investigate how our auth\nsystem handles token refresh. Report back\nwith just the key findings.'\n\n→ Subagent reads all files in SEPARATE window\n→ Your context: +400 tokens (just the summary)\n→ 95% reduction in context cost", win:'Research cost stays in the subagent window. You get the signal without the noise.'},
+        extras:[
+          {name:'Parallel Verification', desc:'After implementing, spawn parallel subagents for security, performance, and test coverage — each in their own window.', simple:'Like three specialist reviewers who each work independently and hand you a summary.'},
+          {name:'Haiku for Routine Work', desc:'Set CLAUDE_CODE_SUBAGENT_MODEL=haiku for routine subagent tasks. Haiku is 10× cheaper for linting and simple lookups.', simple:'Use your most experienced colleague for hard problems. A junior for routine checks.'}
+        ]
+      },
+      { id:'l2-4', title:'MCP Server Hygiene', xp:80, type:'mcp', visual:'mcp',
+        simple:"Every AI plugin you enable — whether you use it today or not — takes up memory space automatically. Like leaving every app on your phone running in the background.",
+        servers:[
+          {name:'filesystem', tokens:800}, {name:'github', tokens:2200}, {name:'supabase', tokens:4100},
+          {name:'vercel', tokens:3800}, {name:'railway', tokens:2900}, {name:'slack', tokens:1600},
+          {name:'linear', tokens:2400}, {name:'notion', tokens:3100}, {name:'stripe', tokens:3700}, {name:'sentry', tokens:2800}
+        ],
+        tip:"Create project-specific .claude/settings.json files that disable all MCP servers except those relevant to the current project. A frontend CSS task doesn't need the Supabase or Stripe MCP."
+      }
+    ]
+  },
+  {
+    id:'m3', icon:'◎', tag:'PROMPTING', color:C.blue,
+    title:'Token-Efficient Prompting',
+    summary:'Write prompts that get better results with fewer tokens.',
+    narrative:"You don't have to be a developer to waste tokens with bad prompts. Vague prompts make AI ask clarifying questions, hedge answers, and explore wrong paths — all of which cost tokens. This module fixes that for everyone.",
+    lessons:[
+      { id:'l3-1', title:'Vague vs. Precise: The Real Cost', xp:90, type:'compare', visual:'comparisons',
+        simple:'A vague request forces the AI to guess what you want. A precise request gets you exactly what you need in one shot — saving both time and memory.',
+        comparisons:[
+          {label:'Task Specification', badT:8, badText:'make this better', badResult:'Claude asks 3 clarifying questions, hedges, explores 2 wrong approaches. ~600 tokens output.', goodT:18, goodText:'optimize readability in src/auth.js — extract magic numbers to constants, add JSDoc to public functions only', goodResult:'Claude does exactly the task. ~150 tokens output.', saving:'Precise prompt uses 4× fewer output tokens and zero back-and-forth.'},
+          {label:'Scope Control', badT:45, badText:'[pastes 800 tokens of full DB schema] now write a validation function', badResult:'Claude processes entire schema even though only 2 fields are relevant.', goodT:20, goodText:'Write validation for User model email + username fields only. Schema is at src/models/user.ts', goodResult:'Claude reads only the two relevant fields. 97% scope reduction.', saving:'File-scoped reference saves 780+ tokens of irrelevant schema context.'},
+          {label:'Output Length Control', badT:5, badText:'explain how JWT works', badResult:'Claude writes 800+ tokens covering basics you already know.', goodT:12, goodText:'explain JWT in 3 bullets for a senior dev — skip the fundamentals', goodResult:'~80 tokens. Exactly what was needed.', saving:'Constrained output: 10× more efficient. Don\'t pay for what you already know.'}
+        ],
+        rule:'Front-load your constraints. Put format, scope, and audience in the first sentence — not the last. Models weight earlier tokens more heavily.'
+      },
+      { id:'l3-2', title:'The CRAFT Framework', xp:100, type:'craft', visual:'craft',
+        simple:"CRAFT is a five-step checklist for writing any AI request. You don't need every step every time — but knowing them helps you spot where your prompts are leaking tokens.",
+        letters:[
+          {letter:'C', word:'Context Scope', color:C.green, desc:'Define what the model should and should not read. Narrow the search space before it starts.', example:'In src/api/auth.ts only — ignore the /legacy directory', simple:'Tell the AI exactly where to look — and where not to.'},
+          {letter:'R', word:'Role Constraint', color:C.blue, desc:"Assign a specific expert role to prime the right reasoning pathway with fewer exploratory tokens.", example:'As a security engineer reviewing this endpoint for auth bypass risks...', simple:"Tell the AI who to be. 'As a plain-English explainer...' gets very different results."},
+          {letter:'A', word:'Action Precision', color:C.purple, desc:"Use specific verbs: refactor, extract, validate, benchmark — not 'improve' or 'fix'.", example:'Extract the rate limiting logic into a reusable middleware function', simple:"Be specific about what you want done. 'Shorten to 3 sentences' beats 'make it shorter'."},
+          {letter:'F', word:'Format Spec', color:C.amber, desc:'Declare output format upfront: code only, bullet points, JSON, diff. Eliminates explanation overhead.', example:'Return only the modified function, no explanation needed', simple:"Tell the AI how to package its answer. 'Give me a numbered list' or 'Just the final paragraph'."},
+          {letter:'T', word:'Token Budget', color:C.pink, desc:'Explicitly limit response length when you don\'t need exhaustive answers. The AI respects word/sentence limits.', example:'Answer in 2 sentences maximum', simple:"Give the AI a word limit. 'In one sentence:' or 'In under 100 words:' — it will stick to it."}
+        ]
+      },
+      { id:'l3-3', title:'Prompt Caching: Pay Once, Reuse', xp:70, type:'caching', visual:'caching',
+        simple:"If you keep sharing the same large document with the AI across multiple questions, caching means the AI only reads it in full once — then remembers it cheaply for follow-ups. Like keeping a book open on your desk.",
+        how:['Mark stable context blocks with cache_control: {type: ephemeral}','First call: full token cost as normal','Subsequent calls: ~90% discount on cached portions','Claude Code enables this automatically — you are already benefiting','Cache TTL: 5 minutes per session. Best for repeated document references.'],
+        savings:[
+          {case:'System prompt (every API call)', first:'2,700 tokens', cached:'270 tokens', saving:'90%'},
+          {case:'Large codebase reference', first:'50,000 tokens', cached:'5,000 tokens', saving:'90%'},
+          {case:'Documentation referenced 10×', first:'10,000 total', cached:'1,900 total', saving:'81%'}
+        ],
+        analogy:'Imagine you are working with a researcher. First time you hand them a 200-page report. After that, instead of re-reading the whole thing, they just glance at their notes. Caching is those notes.'
+      }
+    ]
+  },
+  {
+    id:'m4', icon:'⬡', tag:'ALL TOOLS', color:C.amber,
+    title:'Cross-Platform Strategies',
+    summary:'ChatGPT, Gemini, Cursor, Windsurf — each has its own rules.',
+    narrative:"Token optimization isn't Claude-only. Every AI tool has its own architecture, its own failure modes, its own leverage points. Here's what's different — and what's universal.",
+    lessons:[
+      { id:'l4-1', title:'ChatGPT / GPT-4o: The Memory Trap', xp:80, type:'playbook', visual:'playbook',
+        simple:"ChatGPT has two types of memory. Most people don't realize that persistent memory quietly uses tokens in every new conversation, even unrelated ones.",
+        plays:[
+          {name:'Audit Your Persistent Memory', impact:'HIGH', color:C.red, desc:"GPT's persistent memory injects into every conversation — 100–500 tokens per item. Most users have 20–40 items they've forgotten about.", action:'Settings → Memory → Review and delete items unrelated to current work. Prune to < 10 active items.', simple:"Check what ChatGPT 'remembers' about you and delete the outdated stuff. It's using brain space on old information."},
+          {name:'Custom GPTs for Scoped Work', impact:'HIGH', color:C.amber, desc:'One giant GPT that does everything is inefficient. Create task-specific Custom GPTs with lean, relevant system prompts.', action:'Split by domain: code review GPT, writing GPT, research GPT. Each gets only the context relevant to that task.', simple:"Instead of one assistant who knows everything, use specialists. Your 'code helper' doesn't need to know your writing style."},
+          {name:'Canvas for Long-form Documents', impact:'MED', color:C.green, desc:'Canvas mode offloads document content out of the chat context window. Pasting a 5,000-word document into chat is expensive.', action:'Use Canvas for any document over 1,000 words. Keeps chat lean for Q&A.', simple:"Don't paste long documents into the chat — open them in Canvas instead."},
+          {name:'Upload Files vs Paste Text', impact:'MED', color:C.blue, desc:'Uploading a file is often more token-efficient than pasting its content.', action:'Upload code files, PDFs, and spreadsheets instead of pasting. Especially for files over 200 lines.', simple:'Attach files rather than copy-pasting content. The AI processes attachments more efficiently.'}
+        ]
+      },
+      { id:'l4-2', title:'Gemini: The Long Context Paradox', xp:80, type:'playbook', visual:'playbook',
+        simple:"Gemini can technically hold 1 million words in one conversation. But just because it can doesn't mean it works perfectly at that scale. Here's how to use Gemini's size without falling into its traps.",
+        plays:[
+          {name:'Position Matters — Use the Sandwich', impact:'HIGH', color:C.red, desc:"Gemini's attention degrades on content buried in the middle. Critical instructions should be at START and END.", action:'Structure: [Task + Output Format] then [Reference Material] then [Restate Task].', simple:'Put what you actually want at the beginning AND end of your message. Anything in the middle of a very long message gets less attention.'},
+          {name:'System Instructions vs Chat', impact:'HIGH', color:C.amber, desc:"Gemini's system instruction field is separate from chat and persists efficiently across all turns.", action:'Move all project context, coding standards, and persona instructions to System Instructions — not the first chat message.', simple:"Gemini has a permanent 'briefing' section separate from your conversation. Put standing instructions there."},
+          {name:'Use Grounding Instead of Context', impact:'MED', color:C.green, desc:"Gemini's Google Search grounding lets it fetch real-time information without you injecting large context blocks.", action:"Enable grounding for any task requiring current or factual info. Don't paste web content — let Gemini retrieve it.", simple:"Instead of copying and pasting an article, just ask Gemini to look it up. It can search Google itself."},
+          {name:'Upload Visuals Directly', impact:'MED', color:C.blue, desc:'Architecture diagrams, screenshots, and PDFs as direct uploads are more efficient than converting them to text first.', action:"Upload images and PDFs as files. Don't extract text from them manually and paste.", simple:"Take a photo of your diagram and upload it. Don't type out what the diagram says — the AI reads images directly."}
+        ]
+      },
+      { id:'l4-3', title:'Cursor & Windsurf: Scoped Context', xp:90, type:'playbook', visual:'playbook',
+        simple:"Cursor and Windsurf are AI code editors with their own version of the context window problem — and their own tricks to avoid it.",
+        plays:[
+          {name:'.cursorrules — Same Problem, Different File', impact:'HIGH', color:C.purple, desc:"Cursor's equivalent of CLAUDE.md. Same tiered architecture principles: keep it lean, use @-references for domain docs.", action:'< 500 tokens of always-loaded rules. Use @docs for domain-specific knowledge.', simple:"Cursor has its own briefing file. Keep it short — just the essentials your AI needs for every task."},
+          {name:'@ Scoping — Be Surgical', impact:'HIGH', color:C.red, desc:'In Cursor, @file and @folder explicitly scope what the model reads. @codebase loads everything — expensive and rarely necessary.', action:'Always use specific @file or @folder references. Treat @codebase as a last resort, not a default.', simple:'Instead of giving the AI your entire project, point it at the specific file it needs.'},
+          {name:'Composer vs Chat — Right Tool, Right Job', impact:'MED', color:C.amber, desc:'Cursor Composer is the agentic mode — reads more files automatically. Chat is cheaper for Q&A.', action:'Chat for questions and explanations. Composer for actual code implementations.', simple:"Use 'Chat' to ask questions. Use 'Composer' only when you want the AI to actually write or change code."},
+          {name:'Notepads as Persistent Context', impact:'MED', color:C.green, desc:'Cursor Notepads are persistent context blocks you can @-reference. Store architectural decisions there.', action:'Create notepads for: architecture decisions, API conventions, testing patterns.', simple:"Save important decisions in Notepads so you don't have to re-explain them every session."}
+        ]
+      }
+    ]
+  },
+  {
+    id:'m5', icon:'◉', tag:'UNDER THE HOOD', color:C.pink,
+    title:'The Optimization Pipeline',
+    summary:'Build systems that automatically compress and optimize input before it reaches the model.',
+    narrative:"What if you never had to manually optimize a prompt again? What if there was a layer between your raw request and the AI that automatically trimmed, scoped, and structured it? This module shows you how.",
+    lessons:[
+      { id:'l5-1', title:'The 6-Step Pre-Processing Pipeline', xp:130, type:'pipeline', visual:'pipeline',
+        simple:"Instead of optimizing every prompt by hand, you can build a system that does it automatically. Think of it like a smart editor who sits between you and the AI — taking your rough request, trimming the fat, and sending a polished version forward.",
+        steps:[
+          {n:1, name:'Intent Extraction', color:C.green, icon:'⟁', desc:'Parse the raw input to identify task type, required files, scope, and output format.', input:'fix the bug in the login form', output:'{ task: "debug", scope: ["auth","UI"], files: ["LoginForm.jsx"] }', simple:'The system figures out what you actually want before doing anything.'},
+          {n:2, name:'Relevance Scoring', color:C.blue, icon:'◎', desc:'Score each potential context chunk by semantic similarity to the current intent. Load only top-N most relevant.', input:'20 available context chunks', output:'3 highly relevant chunks selected (score > 0.75). 17 chunks skipped.', simple:'Instead of loading every document, the system picks only the ones relevant to this specific task.'},
+          {n:3, name:'Compression Layer', color:C.purple, icon:'◈', desc:'Strip comments from code snippets, remove boilerplate, compress whitespace, truncate irrelevant sections.', input:'LoginForm.jsx: 847 tokens (full file)', output:'LoginForm.jsx: 210 tokens (auth-relevant sections only)', simple:'The system trims the fat from every document — removing parts irrelevant to your specific task.'},
+          {n:4, name:'Deduplication', color:C.teal, icon:'⬡', desc:'Remove repeated information across context sources. If the same schema appears in 3 files, load it once.', input:'UserSchema appears in: schema.ts, types.ts, api.ts', output:'UserSchema loaded once. 2 references replaced with pointer.', simple:'If the same information appears in multiple places, only include it once.'},
+          {n:5, name:'Budget Allocation', color:C.amber, icon:'★', desc:'Reserve token budgets per context category: 20% system, 30% code, 20% history, 30% response.', input:'Total budget: 100,000 tokens', output:'System: 20K | Code: 30K | History: 20K | Response: 30K', simple:'Decide upfront how much memory each category gets, so nothing overspends.'},
+          {n:6, name:'Structured Injection', color:C.pink, icon:'◉', desc:'Format the compressed context into a structured prompt template that front-loads the most critical information.', input:'Raw compressed chunks', output:'[TASK] Fix login form submit bug\n[SCOPE] LoginForm.jsx lines 45-89\n[CONTEXT] Auth hook pattern...\n[FORMAT] Return diff only', simple:'The final polished brief — all the right information, in the right order, ready to send.'}
+        ],
+        workedExample:{
+          raw:'fix the login bug', tokenBefore:820, tokenAfter:187,
+          after:'[TASK] Debug authentication failure on login form submit\n[SCOPE] src/components/auth/LoginForm.jsx (lines 45-89 only)\n[RELEVANT CONTEXT]\n  - useAuth hook: validateCredentials(email, pass) → Promise<User|Error>\n  - Error class: AuthError extends AppError (src/errors/auth.ts)\n  - Existing pattern: try/catch with setError(err.message)\n[FORMAT] Return: corrected submit handler only\n[BUDGET] Response max: 200 tokens',
+          saving:'77% reduction. Better scoping. Better result.'
+        }
+      },
+      { id:'l5-2', title:'RAG vs Long Context: When to Use Each', xp:110, type:'matrix', visual:'matrix',
+        simple:'Should you load all your documents into the AI at once, or should the AI look them up on demand? The answer depends on how often things change, how large they are, and how many you have.',
+        matrix:[
+          {scenario:'Small static codebase (< 100K tokens)', winner:'Long Context', color:C.green, why:'Load it all. No retrieval errors. Model sees everything coherently.'},
+          {scenario:'Large codebase (> 200K tokens)', winner:'RAG + Long Context', color:C.blue, why:'Embed the codebase, retrieve relevant files, load them into context dynamically.'},
+          {scenario:'Documentation lookup', winner:'RAG', color:C.purple, why:"Docs are huge. Retrieve specific sections on demand. Don't load the full manual."},
+          {scenario:'Long conversation history (50+ turns)', winner:'RAG', color:C.purple, why:'Keep recent turns in context. Use semantic search for relevant older turns.'},
+          {scenario:'Cross-session memory', winner:'RAG', color:C.amber, why:"Context doesn't persist across sessions. External vector store does."},
+          {scenario:'Real-time or changing data', winner:'Tool Call', color:C.red, why:'Call the API or database directly for live data.'}
+        ],
+        hybrid:'The Working Set Pattern: maintain a small in-context working set (< 30K tokens) while a vector store holds the full knowledge base. On each turn, re-rank the working set and swap in newly relevant chunks.',
+        simpleGuide:'Small & static → load it all. Large & complex → search and load pieces. Changes constantly → call the live source directly.'
+      },
+      { id:'l5-3', title:'Extended Thinking: The Hidden Tax', xp:100, type:'thinking', visual:'thinking',
+        simple:"When you ask a complex question, some AI models 'think out loud' first. This thinking uses tokens too, and it's often set much higher than you actually need — like paying for a 3-hour consultation when you only needed 30 minutes.",
+        costs:[
+          {item:'Default thinking budget per request', value:'31,999 tokens', risk:'HIGH', simple:"The default 'thinking time' AI uses on hard questions"},
+          {item:'Cost at Opus pricing ($15/M tokens)', value:'$0.48 per request', risk:'HIGH', simple:'What one hard question costs if you are not careful'},
+          {item:'100 agent steps per day at default', value:'$48/day thinking-only', risk:'CRITICAL', simple:'If an automated system asks 100 questions daily, this adds up fast'},
+          {item:'Optimal budget for most coding tasks', value:'~10,000 tokens', risk:'LOW', simple:'Most problems need much less thinking time than the default'}
+        ],
+        config:'// Reduce thinking budget for routine tasks\n{\n  "thinking": {\n    "type": "enabled",\n    "budget_tokens": 10000  // vs default 31,999\n  }\n}\n\n// Guide:\n// Architecture decisions:    20,000+ tokens\n// Complex debugging:          15,000 tokens\n// Standard implementation:    8,000 tokens\n// Simple Q&A:               thinking disabled',
+        simpleRule:'Simple questions: turn thinking off. Standard tasks: 8,000–10,000. Hard architectural decisions: 20,000+. Don\'t let the default 32,000 run on routine work.'
+      }
+    ]
+  },
+  {
+    id:'m6', icon:'★', tag:'PRACTICUM', color:C.teal,
+    title:'Labs: Apply It All',
+    summary:'Real exercises, real tools. Build your personal optimization toolkit.',
+    narrative:"You've reached the point where this stops being a course and starts being a practice. The labs in this module are where the concepts become skills you actually use.",
+    lessons:[
+      { id:'l6-1', title:'Lab: Audit Your AI Setup', xp:150, type:'lab', visual:'lab',
+        simple:'A step-by-step health check for how you are currently using AI tools. No coding needed — most steps work through settings menus.',
+        steps:[
+          {n:1, title:'Check Context Usage Live', difficulty:'Easy', color:C.green, action:'In Claude Code: type /context and press Enter', goal:'See exactly where your tokens are going. If memory files are > 10% before you start, that\'s your first fix.', simpleAction:'Open Claude Code and type /context — it shows a breakdown of where your memory budget is spent.', output:'claude-sonnet-4-6  76k/200k tokens (38%)\n  System prompt:   2.7k  (1.3%)\n  System tools:   16.8k  (8.4%)\n  Memory files:    7.4k  (3.7%)  <- Your lever\n  Conversation:    9.6k  (4.8%)\n  Free:          118.0k  (58.9%)'},
+          {n:2, title:'Measure Your CLAUDE.md', difficulty:'Easy', color:C.green, action:"Run: wc -c ~/.claude/CLAUDE.md | awk '{print $1/4}' to estimate tokens", goal:'If > 2,000 tokens: needs a tiered refactor. If > 5,000: critical problem.', simpleAction:"In Claude Code, ask: 'How many tokens is my current CLAUDE.md?' — Claude will estimate it for you.", thresholds:[{range:'< 500', label:'Excellent', color:C.green},{range:'500–1,500', label:'OK', color:C.amber},{range:'1,500–3,000', label:'Bloated', color:C.pink},{range:'> 3,000', label:'Critical', color:C.red}]},
+          {n:3, title:'Audit Active MCP Servers', difficulty:'Easy', color:C.amber, action:'Check .claude/settings.json or Claude Code preferences — count enabled MCPs', goal:'Each server: 800–5,000 tokens. If > 5 enabled, you are likely wasting 10,000+ tokens before starting.', simpleAction:'In your Claude Code settings, look at which plugins are turned on. Turn off any you will not use today.'},
+          {n:4, title:'Track a Full Session', difficulty:'Medium', color:C.amber, action:'Use the status bar token % or ccusage tool to monitor a complete work session', goal:'Identify at which fill percentage quality starts degrading for you personally. Set your /compact trigger 15% before that.', simpleAction:"Watch the token percentage at the bottom of Claude Code. Note when responses start feeling 'off' — that's your personal degradation threshold."},
+          {n:5, title:'Benchmark Compressed vs Uncompressed', difficulty:'Medium', color:C.purple, action:'Apply Tier 1/2/3 CLAUDE.md structure, disable unused MCPs, then repeat the same workflow and compare', goal:'Most developers see 40–70% reduction. Calculate: (before - after) / before × 100', simpleAction:'After applying the improvements from this course, do the same task you always do and see how much less memory it uses.'}
+        ]
+      },
+      { id:'l6-2', title:'Lab: The Exploding Session Rescue', xp:120, type:'scenario', visual:'scenario',
+        simple:"A real scenario walkthrough: your session is failing. What do you do, in what order?",
+        context:"It's 3:47pm. You're refactoring the authentication system. Context is 78% full. Claude just re-implemented a helper function you already wrote 2 hours ago — it 'forgot'. The deadline is in 45 minutes.",
+        decisions:[
+          {situation:'Mid-implementation — code half-written', color:C.purple, first:"Ask Claude to write a HANDOFF.md: 'Summarize current state, decisions made, next steps, key variable names.'", then:'Commit your current work to git with a descriptive message.', finally:'/compact and immediately reference the HANDOFF.md file.', never:'Force through to 90%+ — output quality collapses and the deadline becomes impossible.'},
+          {situation:'You just finished a logical sub-task', color:C.green, first:'/compact immediately — you are at a natural breakpoint.', then:'Start the next task as a fresh, specific, narrow prompt.', finally:'Keep the new task scoped to ONE concern.', never:'Wait until auto-compact fires (83.5%) — you lose 5% more context to noise first.'},
+          {situation:'The session is already broken — responses are nonsensical', color:C.amber, first:'/clear — fresh start. Do not try to rescue a corrupted session.', then:'Reference your committed code + HANDOFF.md in the new session.', finally:'Scope the new session to ONE specific task.', never:'Paste the whole old conversation back in — that is what caused the problem.'}
+        ]
+      },
+      { id:'l6-3', title:'Build: Your Optimization Toolkit', xp:200, type:'toolkit', visual:'toolkit',
+        simple:'Your final project: 5 reusable tools that encode everything you have learned. Build these once, use them forever.',
+        items:[
+          {n:1, name:'Tiered CLAUDE.md Template', color:C.green, format:'Markdown', desc:'A 3-tier template with Tier 1 (always-load core), Tier 2 (@imported domain docs), and Tier 3 (never-load exclusions).', value:'Saves 1,000–3,000 tokens every single session', simple:'A fill-in-the-blanks template for your AI briefing document — designed to be lean from the start.'},
+          {n:2, name:'Session Audit Checklist', color:C.blue, format:'Checklist', desc:'Pre-session: which MCPs to disable, expected context budget, planned /compact points.', value:'Prevents 80% of session failures before they start', simple:'A quick pre-flight check before starting any AI work session. Takes 2 minutes, saves hours.'},
+          {n:3, name:'CRAFT Prompt Reference Card', color:C.purple, format:'Reference', desc:'The CRAFT framework with before/after examples for your 5 most common task types.', value:'Reduces clarification back-and-forth by ~70% on average', simple:'A cheat sheet for writing good AI requests. Keep it next to your screen.'},
+          {n:4, name:'HANDOFF.md Template', color:C.amber, format:'Markdown', desc:'Structured template for /compact transitions: current state, decisions, files, next steps.', value:'Recovers 90%+ of information that auto-compaction loses', simple:'A fill-in form your AI completes before memory resets — so no work is lost between sessions.'},
+          {n:5, name:'MCP Profile Configs', color:C.pink, format:'JSON', desc:'Project-type MCP presets: frontend, backend, data, docs. One config per project type.', value:'Eliminates 10,000–30,000 tokens of MCP overhead per session', simple:'Saved settings files that automatically turn on only the AI plugins you need for each type of work.'}
+        ],
+        challenge:'Build all 5 and share them with your team. The developer or writer who builds this toolkit saves their entire team 40–70% on token costs — compounded every single day.'
+      }
+    ]
+  }
+];
+
+// ─── UI HELPERS ───────────────────────────────────────────────────────────
+function Tag(color, text) {
+  return h('span', {style:{display:'inline-block',padding:'3px 10px',borderRadius:'20px',background:color+'22',color:color,fontSize:'10px',fontFamily:"'DM Mono',monospace",letterSpacing:'1px'}}, text);
+}
+function Card(children, extra) {
+  return h('div', {style:Object.assign({background:C.bg2,border:'1px solid '+C.border,borderRadius:'12px',padding:'20px'},extra||{})}, children);
+}
+function CodeBlock(text) {
+  return h('pre', {style:{background:C.bg3,border:'1px solid '+C.border,borderRadius:'8px',padding:'14px 16px',fontFamily:"'DM Mono',monospace",fontSize:'12px',lineHeight:'1.7',color:'#9ca3af',overflowX:'auto',whiteSpace:'pre-wrap',margin:'0'}}, text);
+}
+function Insight(color, label, text) {
+  return h('div', {style:{background:'#0a0a0a',border:'1px solid '+color+'44',borderLeft:'3px solid '+color,borderRadius:'8px',padding:'16px',marginTop:'14px'}},
+    h('div', {style:{color:color,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'8px'}}, label),
+    h('p', {style:{color:'#e5e7eb',fontSize:'14px',lineHeight:'1.7',margin:'0'}}, text)
+  );
+}
+function SimpleBanner(text) {
+  if (!text) return null;
+  return h('div', {style:{background:'#0a0e0a',border:'1px solid '+C.green+'33',borderLeft:'3px solid '+C.green,borderRadius:'8px',padding:'14px 16px',marginBottom:'20px'}},
+    h('div', {style:{color:C.green,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'6px'}}, '✦ PLAIN ENGLISH'),
+    h('p', {style:{color:'#d1fae5',fontSize:'14px',lineHeight:'1.7',margin:'0'}}, text)
+  );
+}
+
+// ─── LESSON VISUAL RENDERERS ──────────────────────────────────────────────
+function renderLesson(lesson, col, isSimple) {
+  var sp = isSimple ? lesson.simple : null;
+  var v = lesson.visual;
+
+  if (v === 'token-demo') {
+    var words = ['Hello','implementation','const','concatenate','AI','refactoring'];
+    var tc = [1,4,1,4,1,4];
+    return h('div', null,
+      SimpleBanner(sp),
+      Card([
+        h('div',{style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace",marginBottom:'14px'}},'WORD → TOKEN COUNT'),
+        h('div',{style:{display:'flex',flexWrap:'wrap',gap:'10px',marginBottom:'20px'}},
+          words.map(function(w,i){
+            return h('div',{key:i,style:{background:C.bg3,border:'1px solid '+(tc[i]>2?C.amber+'55':C.green+'55'),borderRadius:'8px',padding:'10px 14px',textAlign:'center'}},
+              h('div',{style:{color:C.text,fontFamily:"'DM Mono',monospace",fontSize:'14px',fontWeight:'600',marginBottom:'4px'}},w),
+              h('div',{style:{color:tc[i]>2?C.amber:C.green,fontSize:'12px',fontFamily:"'DM Mono',monospace"}},tc[i]+' token'+(tc[i]>1?'s':''))
+            );
+          })
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}},
+          lesson.keypoints.map(function(k,i){
+            return h('div',{key:i,style:{background:C.bg3,borderRadius:'8px',padding:'14px'}},
+              h('div',{style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace",marginBottom:'4px'}},k.label),
+              h('div',{style:{color:col,fontFamily:"'DM Mono',monospace",fontSize:'20px',fontWeight:'700',marginBottom:'4px'}},k.value),
+              h('div',{style:{color:C.muted,fontSize:'11px'}},k.note)
+            );
+          })
+        )
+      ]),
+      Insight(col, isSimple?'✦ ANALOGY':'MENTAL MODEL', isSimple?lesson.analogySimple:lesson.analogyPro),
+      !isSimple && lesson.limits && h('div',{style:{marginTop:'16px'}},
+        h('div',{style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace",marginBottom:'10px'}},'CONTEXT LIMITS BY TOOL'),
+        lesson.limits.map(function(l,i){
+          return h('div',{key:i,style:{display:'flex',gap:'12px',padding:'10px 14px',border:'1px solid '+C.border,borderRadius:'6px',marginBottom:'6px',alignItems:'center',flexWrap:'wrap'}},
+            h('div',{style:{minWidth:'175px',color:C.text,fontSize:'13px'}},l.tool),
+            h('div',{style:{color:col,fontFamily:"'DM Mono',monospace",fontSize:'13px',minWidth:'55px'}},l.window),
+            h('div',{style:{color:C.amber,fontFamily:"'DM Mono',monospace",fontSize:'12px',minWidth:'85px'}},l.usable),
+            h('div',{style:{color:C.muted,fontSize:'12px'}},l.note)
+          );
+        })
+      )
+    );
+  }
+
+  if (v === 'cost-breakdown') {
+    var tot = lesson.breakdown.reduce(function(s,b){return s+b.tokens;},0);
+    return h('div',null,
+      SimpleBanner(sp),
+      Card(lesson.breakdown.map(function(b,i){
+        return h('div',{key:i,style:{marginBottom:'14px'}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:'5px'}},
+            h('span',{style:{color:C.text,fontSize:'13px'}},b.cat),
+            h('span',{style:{color:b.color,fontFamily:"'DM Mono',monospace",fontSize:'12px'}},b.tokens.toLocaleString()+' ('+b.pct+'%)')
+          ),
+          h('div',{style:{height:'8px',background:C.bg3,borderRadius:'4px',overflow:'hidden',marginBottom:'4px'}},
+            h('div',{style:{height:'100%',width:Math.max((b.tokens/tot)*100,0.5)+'%',background:b.color,borderRadius:'4px'}})
+          ),
+          h('div',{style:{color:C.muted,fontSize:'11px'}},isSimple?b.simple:b.desc)
+        );
+      })),
+      Insight(C.amber, '⚠ KEY INSIGHT', lesson.insight)
+    );
+  }
+
+  if (v === 'degradation-curve') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'16px'}},
+        lesson.stages.map(function(st,i){
+          return h('div',{key:i,style:{border:'1px solid '+st.color+'33',borderRadius:'8px',padding:'14px 16px',background:st.color+'08'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'6px'}},
+              h('span',{style:{color:st.color,fontWeight:'700',fontSize:'14px',fontFamily:"'DM Mono',monospace"}},st.pct+' — '+st.label),
+              h('span',{style:{color:st.color,fontSize:'12px',fontFamily:"'DM Mono',monospace"}},'Quality: '+st.quality+'%')
+            ),
+            h('div',{style:{height:'4px',background:C.bg3,borderRadius:'2px',marginBottom:'8px'}},
+              h('div',{style:{height:'100%',width:st.quality+'%',background:st.color,borderRadius:'2px'}})
+            ),
+            h('p',{style:{color:'#9ca3af',fontSize:'13px',margin:'0'}},isSimple?st.simple:st.desc)
+          );
+        })
+      ),
+      Insight(C.green, '★ THE 80% RULE', lesson.rule)
+    );
+  }
+
+  if (v === 'compare') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'12px',marginBottom:'16px'}},
+        h('div',{style:{background:C.bg2,border:'1px solid '+C.red+'44',borderRadius:'12px',padding:'20px'}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px',flexWrap:'wrap',gap:'8px'}},
+            h('div',{style:{color:C.red,fontSize:'11px',fontFamily:"'DM Mono',monospace"}},'❌ '+lesson.bad.label),
+            Tag(C.red, lesson.bad.cost)
+          ),
+          CodeBlock(lesson.bad.code),
+          h('div',{style:{color:C.red,fontSize:'12px',marginTop:'10px'}},'⚠ '+lesson.bad.problem)
+        ),
+        h('div',{style:{background:C.bg2,border:'1px solid '+C.green+'44',borderRadius:'12px',padding:'20px'}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px',flexWrap:'wrap',gap:'8px'}},
+            h('div',{style:{color:C.green,fontSize:'11px',fontFamily:"'DM Mono',monospace"}},'✓ '+lesson.good.label),
+            Tag(C.green, lesson.good.cost)
+          ),
+          CodeBlock(lesson.good.code),
+          h('div',{style:{color:C.green,fontSize:'12px',marginTop:'10px'}},'✓ '+lesson.good.win)
+        )
+      ),
+      lesson.tiers && h('div',null,
+        h('div',{style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace",marginBottom:'10px'}},'THE THREE-TIER SYSTEM'),
+        lesson.tiers.map(function(t,i){
+          return h('div',{key:i,style:{display:'flex',gap:'14px',padding:'12px 16px',border:'1px solid '+C.border,borderRadius:'8px',marginBottom:'6px',background:C.bg2,alignItems:'center',flexWrap:'wrap'}},
+            h('div',{style:{width:'12px',height:'12px',borderRadius:'50%',background:t.color,flexShrink:'0'}}),
+            h('div',{style:{flex:'1',minWidth:'140px'}},
+              h('div',{style:{color:t.color,fontSize:'12px',fontFamily:"'DM Mono',monospace",marginBottom:'2px'}},t.tier),
+              h('div',{style:{color:C.muted,fontSize:'12px'}},t.content)
+            ),
+            Tag(t.color, t.budget)
+          );
+        })
+      ),
+      lesson.extras && lesson.extras.map(function(ex,i){
+        return h('div',{key:i,style:{background:C.bg2,border:'1px solid '+C.border,borderRadius:'12px',padding:'16px',marginTop:'10px'}},
+          h('div',{style:{color:col,fontSize:'12px',fontWeight:'600',marginBottom:'6px'}},ex.name),
+          h('p',{style:{color:C.muted,fontSize:'13px',lineHeight:'1.6',margin:'0'}},isSimple?ex.simple:ex.desc)
+        );
+      })
+    );
+  }
+
+  if (v === 'decision') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'16px'}},
+        lesson.decisions.map(function(d,i){
+          return h('div',{key:i,style:{background:C.bg2,border:'1px solid '+d.actionColor+'33',borderRadius:'12px',padding:'16px'}},
+            h('div',{style:{color:C.text,fontSize:'13px',fontWeight:'600',marginBottom:'10px'}},d.situation),
+            h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px'}},
+              h('div',{style:{background:d.actionColor+'11',border:'1px solid '+d.actionColor+'33',borderRadius:'8px',padding:'10px 14px'}},
+                h('div',{style:{color:d.actionColor,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'5px'}},'✓ DO THIS'),
+                h('div',{style:{color:C.text,fontSize:'13px',fontWeight:'600',marginBottom:'4px'}},d.action),
+                h('div',{style:{color:C.muted,fontSize:'12px'}},d.why)
+              ),
+              h('div',{style:{background:'rgba(255,0,0,0.05)',border:'1px solid '+C.red+'33',borderRadius:'8px',padding:'10px 14px'}},
+                h('div',{style:{color:C.red,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'5px'}},'✗ AVOID'),
+                h('div',{style:{color:'#9ca3af',fontSize:'12px'}},d.bad)
+              )
+            )
+          );
+        })
+      ),
+      lesson.tip && Insight(C.purple, '💡 PRO TECHNIQUE', lesson.tip)
+    );
+  }
+
+  if (v === 'mcp') {
+    return McpWidget(lesson, col, isSimple);
+  }
+
+  if (v === 'comparisons') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'12px',marginBottom:'16px'}},
+        lesson.comparisons.map(function(cmp,i){
+          return h('div',{key:i,style:{background:C.bg2,border:'1px solid '+C.border,borderRadius:'12px',overflow:'hidden'}},
+            h('div',{style:{padding:'10px 16px',background:C.bg3,borderBottom:'1px solid '+C.border,color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace"}},cmp.label),
+            h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr'}},
+              h('div',{style:{padding:'14px 16px',borderRight:'1px solid '+C.border}},
+                h('div',{style:{color:C.red,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'6px'}},'✗ '+cmp.badT+' tokens'),
+                h('div',{style:{color:'#9ca3af',fontSize:'12px',marginBottom:'6px'}},cmp.badText),
+                h('div',{style:{color:C.muted,fontSize:'11px'}},cmp.badResult)
+              ),
+              h('div',{style:{padding:'14px 16px'}},
+                h('div',{style:{color:C.green,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'6px'}},'✓ '+cmp.goodT+' tokens'),
+                h('div',{style:{color:'#e5e7eb',fontSize:'12px',marginBottom:'6px'}},cmp.goodText),
+                h('div',{style:{color:C.muted,fontSize:'11px'}},cmp.goodResult)
+              )
+            ),
+            h('div',{style:{padding:'10px 16px',background:C.bg3,borderTop:'1px solid '+C.border,color:C.amber,fontSize:'12px'}},'→ '+cmp.saving)
+          );
+        })
+      ),
+      Insight(C.amber, '★ GOLDEN RULE', lesson.rule)
+    );
+  }
+
+  if (v === 'craft') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'10px'}},
+        lesson.letters.map(function(l,i){
+          return h('div',{key:i,style:{background:C.bg2,border:'1px solid '+l.color+'33',borderRadius:'12px',padding:'16px'}},
+            h('div',{style:{display:'flex',gap:'14px',alignItems:'flex-start'}},
+              h('div',{style:{width:'44px',height:'44px',borderRadius:'10px',background:l.color+'22',border:'1px solid '+l.color+'44',display:'flex',alignItems:'center',justifyContent:'center',color:l.color,fontWeight:'900',fontSize:'22px',flexShrink:'0',fontFamily:"'DM Mono',monospace"}},l.letter),
+              h('div',{style:{flex:'1'}},
+                h('div',{style:{color:l.color,fontWeight:'700',fontSize:'14px',marginBottom:'4px'}},l.word),
+                h('p',{style:{color:C.muted,fontSize:'13px',margin:'0 0 10px',lineHeight:'1.6'}},isSimple?l.simple:l.desc),
+                h('div',{style:{background:C.bg3,borderRadius:'6px',padding:'8px 12px',fontFamily:"'DM Mono',monospace",fontSize:'12px',color:l.color}},'❝ '+l.example)
+              )
+            )
+          );
+        })
+      )
+    );
+  }
+
+  if (v === 'caching') {
+    return h('div',null,
+      SimpleBanner(sp),
+      Card([
+        h('div',{key:'lbl',style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace",marginBottom:'14px'}},'HOW IT WORKS'),
+        lesson.how.map(function(hw,i){
+          return h('div',{key:i,style:{display:'flex',gap:'12px',padding:'8px 0',borderBottom:i<lesson.how.length-1?'1px solid '+C.border:'none'}},
+            h('div',{style:{color:col,fontFamily:"'DM Mono',monospace",fontSize:'14px',flexShrink:'0'}},(i+1)+'.'),
+            h('div',{style:{color:C.muted,fontSize:'13px'}},hw)
+          );
+        })
+      ]),
+      Card(
+        lesson.savings.map(function(sv,i){
+          return h('div',{key:i,style:{display:'flex',gap:'10px',padding:'10px 0',borderBottom:i<lesson.savings.length-1?'1px solid '+C.border:'none',alignItems:'center',flexWrap:'wrap'}},
+            h('div',{style:{flex:'2',color:C.text,fontSize:'12px',minWidth:'100px'}},sv.case),
+            h('div',{style:{color:C.red,fontFamily:"'DM Mono',monospace",fontSize:'12px'}},sv.first),
+            h('div',{style:{color:C.green,fontFamily:"'DM Mono',monospace",fontSize:'12px'}},sv.cached),
+            Tag(C.green, sv.saving)
+          );
+        }),
+        {marginTop:'12px'}
+      ),
+      isSimple && Insight(C.amber, '✦ ANALOGY', lesson.analogy)
+    );
+  }
+
+  if (v === 'playbook') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'12px'}},
+        lesson.plays.map(function(p,i){
+          return h('div',{key:i,style:{background:C.bg2,border:'1px solid '+p.color+'33',borderRadius:'12px',padding:'18px'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'10px',flexWrap:'wrap',gap:'8px'}},
+              h('div',{style:{color:p.color,fontWeight:'700',fontSize:'14px'}},p.name),
+              Tag(p.color, p.impact+' IMPACT')
+            ),
+            h('p',{style:{color:C.muted,fontSize:'13px',lineHeight:'1.6',margin:'0 0 12px'}},isSimple?(p.simple||p.desc):p.desc),
+            h('div',{style:{background:C.bg3,borderRadius:'6px',padding:'10px 14px'}},
+              h('div',{style:{color:C.green,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'4px'}},'ACTION'),
+              h('div',{style:{color:'#e5e7eb',fontSize:'13px'}},p.action)
+            )
+          );
+        })
+      )
+    );
+  }
+
+  if (v === 'pipeline') {
+    var we = lesson.workedExample;
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'8px',marginBottom:'20px'}},
+        lesson.steps.map(function(st,i){
+          return h('div',{key:i,style:{background:C.bg2,border:'1px solid '+st.color+'33',borderRadius:'12px',padding:'16px'}},
+            h('div',{style:{display:'flex',gap:'14px',alignItems:'flex-start'}},
+              h('div',{style:{width:'36px',height:'36px',borderRadius:'50%',background:st.color+'22',border:'1px solid '+st.color+'44',display:'flex',alignItems:'center',justifyContent:'center',color:st.color,fontSize:'16px',flexShrink:'0'}},st.icon),
+              h('div',{style:{flex:'1'}},
+                h('div',{style:{color:st.color,fontFamily:"'DM Mono',monospace",fontSize:'10px',marginBottom:'3px'}},'STEP '+st.n),
+                h('div',{style:{color:C.text,fontWeight:'600',fontSize:'14px',marginBottom:'5px'}},st.name),
+                h('p',{style:{color:C.muted,fontSize:'13px',margin:'0 0 10px',lineHeight:'1.6'}},isSimple?st.simple:st.desc),
+                h('div',{style:{background:C.bg3,borderRadius:'6px',padding:'8px 12px'}},
+                  h('div',{style:{display:'flex',gap:'8px',alignItems:'flex-start',marginBottom:'5px'}},
+                    h('div',{style:{color:C.red,fontSize:'10px',fontFamily:"'DM Mono',monospace",flexShrink:'0',paddingTop:'1px'}},'IN'),
+                    h('div',{style:{color:'#9ca3af',fontSize:'12px'}},st.input)
+                  ),
+                  h('div',{style:{height:'1px',background:C.border,margin:'5px 0'}}),
+                  h('div',{style:{display:'flex',gap:'8px',alignItems:'flex-start'}},
+                    h('div',{style:{color:C.green,fontSize:'10px',fontFamily:"'DM Mono',monospace",flexShrink:'0',paddingTop:'1px'}},'OUT'),
+                    h('div',{style:{color:'#e5e7eb',fontSize:'12px'}},st.output)
+                  )
+                )
+              )
+            )
+          );
+        })
+      ),
+      h('div',{style:{background:C.bg2,border:'1px solid '+col+'44',borderTop:'3px solid '+col,borderRadius:'12px',padding:'20px'}},
+        h('div',{style:{color:col,fontSize:'11px',fontFamily:"'DM Mono',monospace",marginBottom:'14px'}},'★ WORKED EXAMPLE: "fix the login bug"'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'12px',marginBottom:'14px'}},
+          h('div',{style:{background:C.bg3,border:'1px solid '+C.red+'33',borderRadius:'8px',padding:'12px'}},
+            h('div',{style:{color:C.red,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'6px'}},'RAW — '+we.tokenBefore+' tokens'),
+            h('code',{style:{color:'#9ca3af',fontSize:'13px'}},we.raw)
+          ),
+          h('div',{style:{background:C.bg3,border:'1px solid '+C.green+'33',borderRadius:'8px',padding:'12px',overflow:'auto'}},
+            h('div',{style:{color:C.green,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'6px'}},'OPTIMIZED — '+we.tokenAfter+' tokens'),
+            h('pre',{style:{color:'#e5e7eb',fontSize:'11px',margin:'0',lineHeight:'1.6',whiteSpace:'pre-wrap'}},we.after)
+          )
+        ),
+        h('div',{style:{color:col,fontSize:'13px',fontWeight:'600'}},we.saving)
+      )
+    );
+  }
+
+  if (v === 'matrix') {
+    return h('div',null,
+      SimpleBanner(sp),
+      isSimple && Insight(C.amber, '✦ QUICK GUIDE', lesson.simpleGuide),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'6px',marginBottom:'14px',marginTop:'14px'}},
+        lesson.matrix.map(function(row,i){
+          return h('div',{key:i,style:{display:'flex',gap:'12px',padding:'12px 16px',border:'1px solid '+C.border,borderRadius:'8px',background:C.bg2,alignItems:'center',flexWrap:'wrap'}},
+            h('div',{style:{flex:'2',color:C.text,fontSize:'13px',minWidth:'130px'}},row.scenario),
+            Tag(row.color, row.winner),
+            h('div',{style:{flex:'2',color:C.muted,fontSize:'12px',minWidth:'100px'}},row.why)
+          );
+        })
+      ),
+      !isSimple && Insight(C.purple, 'HYBRID PATTERN', lesson.hybrid)
+    );
+  }
+
+  if (v === 'thinking') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'6px',marginBottom:'16px'}},
+        lesson.costs.map(function(co,i){
+          var rColor = co.risk==='CRITICAL'?C.red:co.risk==='HIGH'?C.pink:C.green;
+          return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 16px',border:'1px solid '+(co.risk==='CRITICAL'?C.red:co.risk==='HIGH'?C.red+'44':C.border),borderRadius:'8px',background:C.bg2,flexWrap:'wrap',gap:'8px'}},
+            h('div',{style:{flex:'2',color:C.text,fontSize:'13px',minWidth:'130px'}},isSimple?co.simple:co.item),
+            h('div',{style:{color:C.amber,fontFamily:"'DM Mono',monospace",fontSize:'13px'}},co.value),
+            Tag(rColor, co.risk)
+          );
+        })
+      ),
+      !isSimple && CodeBlock(lesson.config),
+      Insight(C.green, '✦ SIMPLE GUIDE', lesson.simpleRule)
+    );
+  }
+
+  if (v === 'lab') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'12px'}},
+        lesson.steps.map(function(st,i){
+          return h('div',{key:i,style:{background:C.bg2,border:'1px solid '+st.color+'33',borderRadius:'12px',padding:'18px'}},
+            h('div',{style:{display:'flex',gap:'14px',alignItems:'flex-start'}},
+              h('div',{style:{width:'36px',height:'36px',borderRadius:'50%',background:st.color+'22',border:'1px solid '+st.color+'44',display:'flex',alignItems:'center',justifyContent:'center',color:st.color,fontWeight:'700',fontSize:'16px',flexShrink:'0',fontFamily:"'DM Mono',monospace"}},st.n),
+              h('div',{style:{flex:'1'}},
+                h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px',flexWrap:'wrap',gap:'8px'}},
+                  h('div',{style:{color:C.text,fontWeight:'600',fontSize:'14px'}},st.title),
+                  Tag(st.color, st.difficulty)
+                ),
+                CodeBlock(isSimple?st.simpleAction:st.action),
+                h('div',{style:{color:C.muted,fontSize:'12px',marginTop:'8px'}},'Goal: '+st.goal),
+                st.output && !isSimple && h('div',{style:{marginTop:'10px'}},CodeBlock(st.output)),
+                st.thresholds && h('div',{style:{display:'flex',gap:'6px',flexWrap:'wrap',marginTop:'8px'}},
+                  st.thresholds.map(function(t,j){return Tag(t.color, t.range+': '+t.label);})
+                )
+              )
+            )
+          );
+        })
+      )
+    );
+  }
+
+  if (v === 'scenario') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{background:'#0a0a0a',border:'1px solid '+C.amber+'44',borderRadius:'8px',padding:'16px',marginBottom:'20px'}},
+        h('div',{style:{color:C.amber,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'8px'}},'⚠ SCENARIO'),
+        h('p',{style:{color:'#fef3c7',fontSize:'14px',lineHeight:'1.7',margin:'0',fontStyle:'italic'}},lesson.context)
+      ),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'12px'}},
+        lesson.decisions.map(function(d,i){
+          return h('div',{key:i,style:{background:C.bg2,border:'1px solid '+d.color+'33',borderRadius:'12px',padding:'18px'}},
+            h('div',{style:{color:C.text,fontWeight:'600',fontSize:'14px',marginBottom:'12px'}},d.situation),
+            h('div',{style:{display:'flex',flexDirection:'column',gap:'6px'}},
+              ['first','then','finally'].filter(function(k){return d[k];}).map(function(k,j){
+                return h('div',{key:j,style:{display:'flex',gap:'10px',alignItems:'flex-start',padding:'8px 12px',background:C.bg3,borderRadius:'6px'}},
+                  h('div',{style:{color:d.color,fontFamily:"'DM Mono',monospace",fontSize:'11px',flexShrink:'0',paddingTop:'2px',minWidth:'38px'}},{first:'1ST',then:'THEN',finally:'LAST'}[k]),
+                  h('div',{style:{color:'#e5e7eb',fontSize:'13px'}},d[k])
+                );
+              })
+            ),
+            h('div',{style:{display:'flex',gap:'8px',alignItems:'flex-start',marginTop:'10px',padding:'8px 12px',background:'rgba(255,0,0,0.05)',border:'1px solid '+C.red+'33',borderRadius:'6px'}},
+              h('div',{style:{color:C.red,fontFamily:"'DM Mono',monospace",fontSize:'11px',flexShrink:'0',paddingTop:'2px'}},'NEVER'),
+              h('div',{style:{color:'#9ca3af',fontSize:'13px'}},d.never)
+            )
+          );
+        })
+      )
+    );
+  }
+
+  if (v === 'toolkit') {
+    return h('div',null,
+      SimpleBanner(sp),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'16px'}},
+        lesson.items.map(function(it,i){
+          return h('div',{key:i,style:{background:C.bg2,border:'1px solid '+it.color+'33',borderRadius:'12px',padding:'18px'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'8px',flexWrap:'wrap',gap:'8px'}},
+              h('div',{style:{display:'flex',gap:'10px',alignItems:'center'}},
+                h('div',{style:{width:'28px',height:'28px',borderRadius:'6px',background:it.color+'22',border:'1px solid '+it.color+'44',display:'flex',alignItems:'center',justifyContent:'center',color:it.color,fontWeight:'700',fontFamily:"'DM Mono',monospace",fontSize:'13px',flexShrink:'0'}},it.n),
+                h('div',{style:{color:C.text,fontWeight:'600',fontSize:'14px'}},it.name)
+              ),
+              Tag(it.color, it.format)
+            ),
+            h('p',{style:{color:C.muted,fontSize:'13px',lineHeight:'1.6',margin:'0 0 8px'}},isSimple?it.simple:it.desc),
+            h('div',{style:{color:it.color,fontSize:'12px',fontFamily:"'DM Mono',monospace"}},'💡 '+it.value)
+          );
+        })
+      ),
+      h('div',{style:{background:'#0a0a0a',border:'1px solid '+col+'44',borderTop:'3px solid '+col,borderRadius:'12px',padding:'20px'}},
+        h('div',{style:{color:col,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'8px'}},'🎯 CHALLENGE'),
+        h('p',{style:{color:'#e5e7eb',fontSize:'14px',lineHeight:'1.7',margin:'0'}},lesson.challenge)
+      )
+    );
+  }
+
+  return SimpleBanner(sp) || h('div',null);
+}
+
+// ─── STATEFUL MCP WIDGET ──────────────────────────────────────────────────
+function McpWidget(lesson, col, isSimple) {
+  var active = useState(function(){ return lesson.servers.map(function(_,i){return i<3;}); });
+  var activeArr = active[0], setActive = active[1];
+  var total = lesson.servers.reduce(function(s,sv,i){return s+(activeArr[i]?sv.tokens:0);},0);
+  var lvl = total>15000?C.red:total>8000?C.amber:C.green;
+  return h('div',null,
+    SimpleBanner(isSimple?lesson.simple:null),
+    Card([
+      h('div',{key:'hdr',style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}},
+        h('div',{style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace"}},'ACTIVE MCP OVERHEAD'),
+        h('div',{style:{fontFamily:"'DM Mono',monospace",fontWeight:'700',fontSize:'18px',color:lvl}},total.toLocaleString()+' tokens')
+      ),
+      h('div',{key:'bar',style:{height:'8px',background:C.bg3,borderRadius:'4px',marginBottom:'16px',overflow:'hidden'}},
+        h('div',{style:{height:'100%',width:Math.min((total/30000)*100,100)+'%',background:lvl,borderRadius:'4px',transition:'width 0.3s'}})
+      ),
+      h('div',{key:'grid',style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'}},
+        lesson.servers.map(function(sv,i){
+          var on = activeArr[i];
+          return h('div',{key:i,className:'mcp-chip',
+            onClick:function(){setActive(function(p){var n=p.slice();n[i]=!n[i];return n;});},
+            style:{display:'flex',gap:'10px',alignItems:'center',padding:'10px 12px',border:'1px solid '+(on?col+'44':C.border),borderRadius:'8px',background:on?col+'08':'transparent'}},
+            h('div',{style:{width:'16px',height:'16px',borderRadius:'4px',border:'2px solid '+(on?col:C.dim),background:on?col:'transparent',flexShrink:'0',display:'flex',alignItems:'center',justifyContent:'center'}},
+              on&&h('span',{style:{color:'#000',fontSize:'10px',fontWeight:'900'}},'✓')
+            ),
+            h('div',{style:{flex:'1'}},
+              h('div',{style:{color:C.text,fontSize:'12px',fontFamily:"'DM Mono',monospace"}},sv.name),
+              h('div',{style:{color:C.muted,fontSize:'11px'}},sv.tokens.toLocaleString()+' tokens')
+            )
+          );
+        })
+      ),
+      h('div',{key:'hint',style:{color:C.muted,fontSize:'11px',marginTop:'12px'}},'← Click to toggle. Watch the token cost change.')
+    ]),
+    Insight(col, 'SOLUTION', lesson.tip)
+  );
+}
+
+// ─── GLOSSARY MODAL ───────────────────────────────────────────────────────
+function GlossaryModal(term, onClose) {
+  if (!term) return null;
+  return h('div',{onClick:onClose,style:{position:'fixed',inset:'0',background:'rgba(0,0,0,0.65)',display:'flex',alignItems:'center',justifyContent:'center',padding:'20px',zIndex:'100'}},
+    h('div',{onClick:function(e){e.stopPropagation();},style:{background:C.bg2,border:'1px solid '+C.amber+'44',borderRadius:'12px',padding:'20px',maxWidth:'400px',width:'100%'}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:'12px'}},
+        h('div',{style:{color:C.amber,fontFamily:"'DM Mono',monospace",fontSize:'12px',textTransform:'uppercase'}},term),
+        h('button',{onClick:onClose,style:{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:'22px',lineHeight:'1',padding:'0',display:'flex',alignItems:'center',justifyContent:'center'}},'×')
+      ),
+      h('p',{style:{color:C.text,fontSize:'14px',lineHeight:'1.7',margin:'0'}},GLOSSARY[term]||'')
+    )
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────
+function App() {
+  var screenState = useState('onboard');
+  var screen = screenState[0], setScreen = screenState[1];
+
+  var audState = useState(null);
+  var audience = audState[0], setAudience = audState[1];
+
+  var smState = useState(false);
+  var simpleMode = smState[0], setSimpleMode = smState[1];
+
+  var modState = useState(null);
+  var activeMod = modState[0], setActiveMod = modState[1];
+
+  var lesState = useState(null);
+  var activeLesson = lesState[0], setActiveLesson = lesState[1];
+
+  var compState = useState([]);
+  var completedArr = compState[0], setCompletedArr = compState[1];
+
+  var xpState = useState(0);
+  var xp = xpState[0], setXp = xpState[1];
+
+  var glState = useState(null);
+  var glossaryTerm = glState[0], setGlossaryTerm = glState[1];
+
+  var isCompleted = function(id){ return completedArr.indexOf(id) >= 0; };
+
+  function markDone(id, pts) {
+    if (!isCompleted(id)) {
+      setCompletedArr(function(p){ return p.concat([id]); });
+      setXp(function(p){ return p + pts; });
+    }
+  }
+
+  function nav(scr) {
+    setScreen(scr);
+    window.scrollTo(0,0);
+  }
+
+  function goBack() {
+    if (screen === 'lesson') nav('module');
+    else nav('home');
+  }
+
+  var totalLessons = MODULES.reduce(function(s,m){return s+m.lessons.length;},0);
+  var totalXP = MODULES.reduce(function(s,m){return m.lessons.reduce(function(l,n){return l+n.xp;},s);},0);
+  var rank = RANKS.slice().reverse().find(function(r){return xp>=r.min;}) || RANKS[0];
+  var nextRank = RANKS[RANKS.indexOf(rank)+1] || null;
+  var modeColor = audience ? MODES[audience].color : C.green;
+
+  // ── NAV BAR ──
+  function NavBar(backLabel) {
+    return h('div',{style:{position:'sticky',top:'0',background:'rgba(6,6,8,0.95)',backdropFilter:'blur(12px)',WebkitBackdropFilter:'blur(12px)',borderBottom:'1px solid '+C.border,padding:'12px 16px',zIndex:'50',display:'flex',justifyContent:'space-between',alignItems:'center'}},
+      h('button',{onClick:goBack,style:{background:'none',border:'none',color:C.muted,cursor:'pointer',fontSize:'13px',padding:'0',fontFamily:"'DM Sans',system-ui,sans-serif"}},'\u2190 '+backLabel),
+      h('button',{className:'tog',onClick:function(){setSimpleMode(function(p){return !p;});},style:{background:simpleMode?C.amber+'22':'transparent',border:'1px solid '+(simpleMode?C.amber:C.border),borderRadius:'20px',padding:'5px 14px',color:simpleMode?C.amber:C.muted,cursor:'pointer',fontSize:'11px',fontFamily:"'DM Mono',monospace"}},simpleMode?'✦ Plain English ON':'✦ Plain English')
+    );
+  }
+
+  // ── ONBOARD ──
+  if (screen === 'onboard') {
+    return h('div',{style:{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:'24px 16px'}},
+      h('div',{className:'fade-in',style:{maxWidth:'480px',width:'100%'}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:'10px',marginBottom:'32px'}},
+          h('div',{className:'pulse',style:{width:'8px',height:'8px',borderRadius:'50%',background:C.green}}),
+          h('div',{style:{color:C.green,fontFamily:"'DM Mono',monospace",fontSize:'11px',letterSpacing:'2px'}},'TOKEN MASTERY — v1.0')
+        ),
+        h('h1',{style:{fontFamily:"'Playfair Display',Georgia,serif",fontSize:'clamp(32px,7vw,48px)',fontWeight:'900',lineHeight:'1.1',color:'#f9fafb',margin:'0 0 16px'}},
+          'Stop hitting',h('br'),'context ',h('span',{style:{color:C.green}},'limits.')
+        ),
+        h('p',{style:{color:C.muted,fontSize:'15px',lineHeight:'1.7',margin:'0 0 36px'}},'A hands-on course in token optimization for Claude Code, ChatGPT, Gemini, and agentic AI systems. Built for everyone — from first-time AI users to staff engineers.'),
+        h('div',{style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace",marginBottom:'14px',letterSpacing:'1px'}},'WHO ARE YOU? (this adapts the course)'),
+        h('div',{style:{display:'flex',flexDirection:'column',gap:'10px',marginBottom:'28px'}},
+          Object.keys(MODES).map(function(key){
+            var mode = MODES[key];
+            var sel = audience === key;
+            return h('div',{key:key,onClick:function(){setAudience(key);},style:{display:'flex',gap:'14px',padding:'16px 20px',border:'2px solid '+(sel?mode.color:C.border),borderRadius:'12px',cursor:'pointer',background:sel?mode.color+'10':C.bg2,transition:'all 0.2s',alignItems:'center'}},
+              h('div',{style:{width:'40px',height:'40px',borderRadius:'10px',background:mode.color+'22',display:'flex',alignItems:'center',justifyContent:'center',color:mode.color,fontSize:'20px',flexShrink:'0'}},mode.icon),
+              h('div',{style:{flex:'1'}},
+                h('div',{style:{color:sel?mode.color:C.text,fontWeight:'700',fontSize:'15px',marginBottom:'3px'}},mode.label),
+                h('div',{style:{color:C.muted,fontSize:'12px'}},mode.desc)
+              ),
+              sel && h('div',{style:{color:mode.color,fontSize:'20px',fontWeight:'700'}},'✓')
+            );
+          })
+        ),
+        h('button',{disabled:!audience,onClick:function(){if(audience){if(audience==='explorer')setSimpleMode(true);nav('home');}},style:{width:'100%',padding:'16px',background:audience?MODES[audience].color:C.dim,border:'none',borderRadius:'10px',color:'#000',fontWeight:'700',fontSize:'15px',cursor:audience?'pointer':'not-allowed',fontFamily:"'DM Mono',monospace",letterSpacing:'0.5px',opacity:audience?'1':'0.5'}},'START THE COURSE →'),
+        audience && h('div',{style:{color:C.muted,fontSize:'11px',textAlign:'center',marginTop:'12px',fontFamily:"'DM Mono',monospace"}},MODES[audience].tag)
+      )
+    );
+  }
+
+  // ── LESSON SCREEN ──
+  if (screen === 'lesson' && activeLesson && activeMod) {
+    var col = activeMod.color;
+    var done = isCompleted(activeLesson.id);
+    return h('div',{style:{minHeight:'100vh'}},
+      NavBar(activeMod.title),
+      h('div',{className:'fade-in',style:{maxWidth:'700px',margin:'0 auto',padding:'28px 16px 48px'}},
+        Tag(col, activeLesson.type.toUpperCase()),
+        h('h1',{style:{fontFamily:"'Playfair Display',Georgia,serif",fontSize:'24px',fontWeight:'900',color:'#f9fafb',margin:'10px 0 6px',lineHeight:'1.2'}},activeLesson.title),
+        h('div',{style:{color:C.muted,fontSize:'12px',fontFamily:"'DM Mono',monospace",marginBottom:'28px'}},activeLesson.xp+' XP'),
+        renderLesson(activeLesson, col, simpleMode),
+        h('div',{style:{marginTop:'36px',paddingTop:'24px',borderTop:'1px solid '+C.border}},
+          done
+            ? h('div',{style:{display:'flex',alignItems:'center',gap:'12px',padding:'16px 20px',background:C.green+'11',border:'1px solid '+C.green+'33',borderRadius:'10px'}},
+                h('span',{style:{color:C.green,fontSize:'20px'}},'✓'),
+                h('div',null,
+                  h('div',{style:{color:C.green,fontFamily:"'DM Mono',monospace",fontSize:'13px'}},'Lesson complete — '+activeLesson.xp+' XP earned'),
+                  h('div',{style:{color:C.muted,fontSize:'12px',marginTop:'2px'}},'You can revisit this lesson anytime')
+                )
+              )
+            : h('button',{onClick:function(){markDone(activeLesson.id,activeLesson.xp);},style:{width:'100%',padding:'16px',background:col,border:'none',borderRadius:'10px',color:'#000',fontWeight:'700',fontSize:'15px',cursor:'pointer',fontFamily:"'DM Mono',monospace"}},'MARK COMPLETE → +'+activeLesson.xp+' XP')
+        )
+      ),
+      GlossaryModal(glossaryTerm, function(){setGlossaryTerm(null);})
+    );
+  }
+
+  // ── MODULE SCREEN ──
+  if (screen === 'module' && activeMod) {
+    var col2 = activeMod.color;
+    var doneCount = activeMod.lessons.filter(function(l){return isCompleted(l.id);}).length;
+    var pct = Math.round((doneCount/activeMod.lessons.length)*100);
+    return h('div',{style:{minHeight:'100vh'}},
+      NavBar('All Modules'),
+      h('div',{className:'fade-in',style:{maxWidth:'700px',margin:'0 auto',padding:'28px 16px 48px'}},
+        h('div',{style:{display:'flex',gap:'14px',alignItems:'flex-start',marginBottom:'20px'}},
+          h('div',{style:{width:'56px',height:'56px',borderRadius:'14px',background:col2+'22',border:'1px solid '+col2+'44',display:'flex',alignItems:'center',justifyContent:'center',color:col2,fontSize:'26px',flexShrink:'0'}},activeMod.icon),
+          h('div',null,
+            Tag(col2, activeMod.tag),
+            h('h1',{style:{fontFamily:"'Playfair Display',Georgia,serif",fontSize:'22px',fontWeight:'900',color:'#f9fafb',margin:'8px 0 6px'}},activeMod.title),
+            h('p',{style:{color:C.muted,fontSize:'13px',margin:'0'}},activeMod.summary)
+          )
+        ),
+        h('div',{style:{background:C.bg2,border:'1px solid '+col2+'33',borderLeft:'3px solid '+col2,borderRadius:'8px',padding:'16px',marginBottom:'24px'}},
+          h('div',{style:{color:col2,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'8px'}},'◈ YOUR SCENARIO'),
+          h('p',{style:{color:'#e5e7eb',fontSize:'13px',lineHeight:'1.7',margin:'0',fontStyle:'italic'}},activeMod.narrative)
+        ),
+        h('div',{style:{display:'flex',alignItems:'center',gap:'12px',marginBottom:'20px'}},
+          h('div',{style:{flex:'1',height:'4px',background:C.bg3,borderRadius:'2px'}},
+            h('div',{style:{height:'100%',width:pct+'%',background:col2,borderRadius:'2px',transition:'width 0.5s'}})
+          ),
+          h('span',{style:{color:C.muted,fontSize:'12px',fontFamily:"'DM Mono',monospace"}},doneCount+'/'+activeMod.lessons.length+' complete')
+        ),
+        h('div',{style:{display:'flex',flexDirection:'column',gap:'10px'}},
+          activeMod.lessons.map(function(lesson,i){
+            var isDone = isCompleted(lesson.id);
+            return h('div',{key:lesson.id,className:'lesson-row',
+              onClick:function(){setActiveLesson(lesson);nav('lesson');},
+              style:{display:'flex',gap:'14px',padding:'18px 20px',border:'1px solid '+(isDone?col2+'44':C.border),borderRadius:'10px',background:isDone?col2+'08':C.bg2,alignItems:'center'}},
+              h('div',{style:{width:'34px',height:'34px',borderRadius:'50%',background:isDone?col2+'33':C.bg3,border:'2px solid '+(isDone?col2:C.dim),display:'flex',alignItems:'center',justifyContent:'center',color:isDone?col2:C.muted,fontSize:'13px',flexShrink:'0',fontFamily:"'DM Mono',monospace",fontWeight:'700'}},isDone?'✓':(i+1)),
+              h('div',{style:{flex:'1'}},
+                h('div',{style:{color:isDone?'#f9fafb':C.text,fontSize:'14px',fontWeight:'500',marginBottom:'4px'}},lesson.title),
+                h('div',{style:{color:C.muted,fontSize:'12px'}},lesson.type.charAt(0).toUpperCase()+lesson.type.slice(1)+' · '+lesson.xp+' XP')
+              ),
+              h('div',{style:{color:C.dim,fontSize:'20px'}},'›')
+            );
+          })
+        )
+      ),
+      GlossaryModal(glossaryTerm, function(){setGlossaryTerm(null);})
+    );
+  }
+
+  // ── HOME SCREEN ──
+  var totalDone = completedArr.length;
+  var overallPct = Math.round((totalDone/totalLessons)*100);
+
+  return h('div',{style:{minHeight:'100vh'}},
+    h('div',{style:{borderBottom:'1px solid '+C.border,padding:'14px 16px',display:'flex',justifyContent:'space-between',alignItems:'center'}},
+      h('div',{style:{display:'flex',alignItems:'center',gap:'8px'}},
+        h('div',{className:'pulse',style:{width:'8px',height:'8px',borderRadius:'50%',background:C.green}}),
+        h('div',{style:{color:C.green,fontFamily:"'DM Mono',monospace",fontSize:'11px',letterSpacing:'1.5px'}},'TOKEN MASTERY')
+      ),
+      h('div',{style:{display:'flex',gap:'8px',alignItems:'center'}},
+        h('button',{className:'tog',onClick:function(){setSimpleMode(function(p){return !p;});},style:{background:simpleMode?C.amber+'22':'transparent',border:'1px solid '+(simpleMode?C.amber:C.border),borderRadius:'20px',padding:'5px 12px',color:simpleMode?C.amber:C.muted,cursor:'pointer',fontSize:'11px',fontFamily:"'DM Mono',monospace"}},simpleMode?'✦ Plain English ON':'✦ Plain English'),
+        h('button',{onClick:function(){nav('onboard');},style:{background:'none',border:'1px solid '+C.border,borderRadius:'20px',padding:'5px 12px',color:C.muted,cursor:'pointer',fontSize:'11px',fontFamily:"'DM Mono',monospace"}},'Switch')
+      )
+    ),
+    h('div',{className:'fade-in',style:{maxWidth:'700px',margin:'0 auto',padding:'28px 16px 48px'}},
+      h('div',{style:{marginBottom:'32px'}},
+        h('div',{style:{display:'flex',gap:'8px',alignItems:'center',marginBottom:'12px'}},
+          audience && Tag(modeColor, MODES[audience].icon+' '+MODES[audience].label+' mode'),
+          h('span',{style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace"}},xp+' XP · '+rank.name)
+        ),
+        h('h1',{style:{fontFamily:"'Playfair Display',Georgia,serif",fontSize:'clamp(28px,6vw,40px)',fontWeight:'900',lineHeight:'1.1',color:'#f9fafb',margin:'0 0 12px'}},
+          'Stop hitting',h('br'),h('span',{style:{color:C.green}},'context limits.')
+        ),
+        h('p',{style:{color:C.muted,fontSize:'14px',lineHeight:'1.7',margin:'0 0 24px'}},
+          !audience||audience==='explorer' ? 'Learn how to get more out of AI tools without running into frustrating memory limits. No coding background needed.'
+          : audience==='practitioner' ? 'Master the techniques that keep your AI sessions running at full quality — from prompt design to session architecture.'
+          : 'Deep-dive into token economics, context architecture, and automated optimization pipelines across Claude, GPT-4o, Gemini, and agentic frameworks.'
+        )
+      ),
+      Card([
+        h('div',{key:'top',style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'14px'}},
+          h('div',null,
+            h('div',{style:{color:C.muted,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'4px'}},'RANK'),
+            h('div',{style:{color:rank.color,fontSize:'22px',fontWeight:'700',fontFamily:"'DM Mono',monospace"}},rank.name)
+          ),
+          h('div',{style:{textAlign:'right'}},
+            h('div',{style:{color:C.muted,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'4px'}},'PROGRESS'),
+            h('div',{style:{color:C.text,fontSize:'22px',fontWeight:'700',fontFamily:"'DM Mono',monospace"}},totalDone,h('span',{style:{color:C.dim}},'/'+totalLessons))
+          )
+        ),
+        h('div',{key:'bar',style:{height:'6px',background:C.bg3,borderRadius:'3px',marginBottom:'8px',overflow:'hidden'}},
+          h('div',{style:{height:'100%',width:overallPct+'%',background:'linear-gradient(90deg,'+C.green+','+C.blue+')',borderRadius:'3px',transition:'width 0.6s'}})
+        ),
+        h('div',{key:'foot',style:{display:'flex',justifyContent:'space-between'}},
+          h('div',{style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace"}},xp+'/'+(nextRank?nextRank.min:totalXP)+' XP → '+(nextRank?nextRank.name:'MAX')),
+          h('div',{style:{color:C.muted,fontSize:'11px'}},overallPct+'% complete')
+        )
+      ], {marginBottom:'24px'}),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:'10px',marginBottom:'24px'}},
+        [{label:'Lessons',value:totalLessons,color:C.green},{label:'Total XP',value:totalXP,color:C.purple},{label:'Tools Covered',value:'7+',color:C.blue}].map(function(st,i){
+          return Card([
+            h('div',{key:'v',style:{color:st.color,fontFamily:"'DM Mono',monospace",fontSize:'24px',fontWeight:'700'}},st.value),
+            h('div',{key:'l',style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace",marginTop:'2px'}},st.label)
+          ], {textAlign:'center',key:i});
+        })
+      ),
+      h('div',{style:{background:C.bg2,border:'1px solid '+C.amber+'44',borderLeft:'3px solid '+C.amber,borderRadius:'8px',padding:'16px',marginBottom:'24px'}},
+        h('div',{style:{color:C.amber,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'8px'}},'◈ THE SCENARIO THIS COURSE SOLVES'),
+        h('p',{style:{color:'#fef3c7',fontSize:'14px',lineHeight:'1.7',margin:'0',fontStyle:'italic'}},"\"It's 3pm. You've been working with Claude Code for 3 hours. The responses get vague. It 'forgets' decisions made an hour ago. By 4pm the session is broken and you've lost progress. This course explains exactly why — and gives you the tools to never experience it again.\"")
+      ),
+      h('div',{style:{color:C.muted,fontSize:'11px',fontFamily:"'DM Mono',monospace",marginBottom:'12px',letterSpacing:'1px'}},'COURSE MODULES'),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:'10px'}},
+        MODULES.map(function(mod){
+          var d = mod.lessons.filter(function(l){return isCompleted(l.id);}).length;
+          var p = Math.round((d/mod.lessons.length)*100);
+          return h('div',{key:mod.id,className:'mod-card',
+            onClick:function(){setActiveMod(mod);nav('module');},
+            style:{display:'flex',gap:'14px',padding:'18px 16px',border:'1px solid '+C.border,borderRadius:'12px',background:C.bg2,alignItems:'center'}},
+            h('div',{style:{width:'50px',height:'50px',borderRadius:'12px',background:mod.color+'22',border:'1px solid '+mod.color+'33',display:'flex',alignItems:'center',justifyContent:'center',color:mod.color,fontSize:'22px',flexShrink:'0'}},mod.icon),
+            h('div',{style:{flex:'1',minWidth:'0'}},
+              h('div',{style:{color:mod.color,fontSize:'10px',fontFamily:"'DM Mono',monospace",marginBottom:'3px'}},mod.tag),
+              h('div',{style:{color:'#f9fafb',fontSize:'15px',fontWeight:'600',marginBottom:'3px'}},mod.title),
+              h('div',{style:{color:C.muted,fontSize:'12px',marginBottom:p>0?'8px':'0'}},mod.summary),
+              p>0 && h('div',{style:{display:'flex',alignItems:'center',gap:'8px'}},
+                h('div',{style:{flex:'1',height:'3px',background:C.bg3,borderRadius:'2px'}},
+                  h('div',{style:{height:'100%',width:p+'%',background:mod.color,borderRadius:'2px'}})
+                ),
+                h('span',{style:{color:C.muted,fontSize:'10px',fontFamily:"'DM Mono',monospace"}},p+'%')
+              )
+            ),
+            h('div',{style:{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:'4px',flexShrink:'0'}},
+              h('div',{style:{color:C.dim,fontSize:'20px'}},'›'),
+              h('div',{style:{color:C.muted,fontSize:'10px',fontFamily:"'DM Mono',monospace"}},mod.lessons.length+' lessons')
+            )
+          );
+        })
+      ),
+      h('div',{style:{color:C.dim,fontSize:'11px',fontFamily:"'DM Mono',monospace",textAlign:'center',marginTop:'32px'}},'Token Mastery v1.0 · kamalraj21.github.io')
+    ),
+    GlossaryModal(glossaryTerm, function(){setGlossaryTerm(null);})
+  );
+}
+
+// ── BOOT ──
+var root = document.getElementById('app');
+createRoot(root).render(h(App, null));
+
+})();
+</script>
+</body>
+</html>
